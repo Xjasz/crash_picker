@@ -1,0 +1,73 @@
+{
+    "inplay_objects": [
+        {
+            "name": "play_button",
+            "x": 2480,
+            "y": -496,
+            "width": 160,
+            "height": 40
+        },
+        {
+            "name": "crash_text",
+            "x": 2345,
+            "y": -804,
+            "width": 400,
+            "height": 120
+        },
+        {
+            "name": "win_end_color",
+            "x": 2553,
+            "y": -680,
+            "width": 10,
+            "height": 10
+        },
+        {
+            "name": "lag_crash_strip",
+            "x": 2340,
+            "y": -884,
+            "width": 370,
+            "height": 35
+        }
+    ],
+    "restart_objects": [
+        {
+            "name": "profit_text",
+            "x": 2359,
+            "y": -192,
+            "width": 120,
+            "height": 40
+        },
+        {
+            "name": "refresh_button",
+            "x": 2368,
+            "y": -1025,
+            "width": 15,
+            "height": 15
+        },
+        {
+            "name": "bet_input",
+            "x": 2359,
+            "y": -397,
+            "width": 160,
+            "height": 40
+        },
+        {
+            "name": "cashout_input",
+            "x": 2359,
+            "y": -294,
+            "width": 160,
+            "height": 40
+        },
+        {
+            "name": "ball_start_color",
+            "x": 2364,
+            "y": -580,
+            "width": 10,
+            "height": 10
+        }
+    ],
+    "window": {
+        "x": 1872,
+        "y": -1008
+    }
+}

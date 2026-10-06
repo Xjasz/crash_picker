@@ -1,0 +1,8 @@
+data/screenshots/
+data/crash_data.csv
+logs/
+__pycache__/
+venv/
+.idea/
+.scratch/
+.playwright/

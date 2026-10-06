@@ -1,0 +1,89 @@
+{
+  "current_strategy_id": "double_crown",
+  "strategies": [
+    {
+      "id": "alt_peaks",
+      "label": "Alt Peaks 8.8K",
+      "cashpoints": [27.3, 4.9, 18.1, 3.6, 7.2, 2.3, 2.1, 1.3, 2.1, 5],
+      "multipliers": [1, 14, 2.5, 9, 1.25, 0.5, 1.5, 1.25, 1.25, 2]
+    },
+    {
+      "id": "delayed_surge",
+      "label": "Delayed Surge 15.6K",
+      "cashpoints": [6.1, 26.3, 18.1, 4.4, 7.2, 2.3, 2.1, 1.3, 2.1, 5],
+      "multipliers": [1, 3.1, 14, 9, 1.85, 0.5, 1.5, 1.25, 1.25, 2]
+    },
+    {
+      "id": "power_climb",
+      "label": "Power Climb 14K",
+      "cashpoints": [25, 2, 3, 5, 10, 20, 1.5, 1.5, 2.1, 5],
+      "multipliers": [1, 12, 1.5, 2, 3, 4.4, 0.5, 1.3, 1.25, 2]
+    },
+    {
+      "id": "triple_8",
+      "label": "Triple 8 5K",
+      "cashpoints": [35, 8, 8, 8, 3, 1.5, 1.5, 2.1, 1.15, 5],
+      "multipliers": [1, 11.9, 3.45, 3.45, 2.45, 0.5, 1.3, 1.25, 1.05, 2]
+    },
+    {
+      "id": "falling_steps",
+      "label": "Falling Steps 10.3K",
+      "cashpoints": [40, 12, 6, 3, 2, 1.5, 1.3, 1.5, 2.1, 5],
+      "multipliers": [1, 19.5, 6.5, 3.5, 1.8, 0.5, 1.2, 1.3, 1.25, 2]
+    },
+    {
+      "id": "twin_40",
+      "label": "Twin 40 8.4K",
+      "cashpoints": [40, 40, 1.5, 1.5, 1.5, 1.3, 1.5, 2.1, 1.3, 5],
+      "multipliers": [1, 27.7, 16.94, 1.2, 0.5, 1.2, 1.3, 1.25, 1.25, 2]
+    },
+    {
+      "id": "20_zigzag",
+      "label": "20 Zigzag 7.2K",
+      "cashpoints": [20, 2.5, 20, 2.5, 20, 1.5, 1.3, 1.5, 2.1, 5],
+      "multipliers": [1, 9.5, 1.65, 10.5, 1.4, 0.5, 1.2, 1.3, 1.25, 2]
+    },
+    {
+      "id": "10_5_wave",
+      "label": "10 5 Wave 4.5K",
+      "cashpoints": [10, 5, 10, 5, 2, 5, 1.7, 7.3, 2.1, 5],
+      "multipliers": [1, 4.5, 2.75, 5.5, 2.75, 1.5, 0.5, 1.2, 1.05, 2]
+    },
+    {
+      "id": "quad_5",
+      "label": "Quad 5 4.5K",
+      "cashpoints": [10, 5, 5, 5, 5, 3.5, 1.5, 1.5, 2.1, 5],
+      "multipliers": [1, 4.5, 3, 3, 3, 3, 0.5, 1.3, 1.25, 2]
+    },
+    {
+      "id": "dip_surge",
+      "label": "Dip Surge 4.7K",
+      "cashpoints": [28, 2, 2, 10, 3, 8, 1.5, 1.5, 2.1, 5],
+      "multipliers": [1, 13.5, 1.5, 1.5, 5.5, 1.6, 0.5, 1.3, 1.25, 2]
+    },
+    {
+      "id": "flat_return",
+      "label": "Flat Return 4.4K",
+      "cashpoints": [40, 10, 5, 3, 2, 1.5, 1.5, 1.5, 2.1, 5],
+      "multipliers": [1, 17, 4.5, 2.25, 1.6, 1.4, 0.5, 1.3, 1.25, 2]
+    },
+    {
+      "id": "target_arch",
+      "label": "Target Arch 15.3K",
+      "cashpoints": [6, 9, 12, 15, 12, 9, 6, 1.5, 2.1, 5],
+      "multipliers": [1, 4, 2.6, 3.4, 4.1, 3.7, 1.5, 0.5, 1.25, 2]
+    },
+    {
+      "id": "double_crown",
+      "label": "Double Crown 31K",
+      "cashpoints": [30, 20, 2, 2.5, 10, 10, 4, 1.5, 2.1, 5],
+      "multipliers": [1, 15, 11, 1.5, 1.6, 3, 1.5, 0.5, 1.25, 2]
+    },
+    {
+      "id": "rising_rebound",
+      "label": "Rising Rebound 24.1K",
+      "cashpoints": [8, 15, 6, 12, 25, 10, 4, 1.5, 2.1, 5],
+      "multipliers": [1, 4, 7, 3, 3, 3, 1.5, 0.5, 1.25, 2]
+    }
+  ]
+}
