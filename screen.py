@@ -11,10 +11,11 @@ from PIL import Image, ImageFilter, ImageGrab, ImageOps
 
 logger = logging.getLogger('crash_picker')
 user32, gdi32, kernel32 = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.kernel32
-RED_RGB = (191, 43, 63)
-GREEN_RGB = (96, 221, 63)
+RED_RGB = (202, 13, 61)
+GREEN_RGB = (45, 224, 28)
 WHITE_RGB = (255, 255, 255)
-BET_LIVE_RGB = (37, 115, 220)
+BET_LIVE_RGB = (20, 117, 225)
+COLOR_TOLERANCE = 60
 PILL_FLOOR = 45
 PILL_MIN_WIDTH = 20
 PILL_PAD = 4
@@ -105,7 +106,7 @@ def capture_rgb_fast(button):
     return np.frombuffer(buffer, np.uint8).reshape(-1, 4)[:, 2::-1].tobytes()
 
 def has_color(rgb_bytes, rgb):
-    return bool((np.frombuffer(rgb_bytes, np.uint8).reshape(-1, 3) == rgb).all(1).any())
+    return bool((np.abs(np.frombuffer(rgb_bytes, np.uint8).reshape(-1, 3).astype(np.int16) - rgb) <= COLOR_TOLERANCE).all(1).any())
 
 def classify_colors(rgb_bytes):
     return has_color(rgb_bytes, GREEN_RGB), has_color(rgb_bytes, RED_RGB)
