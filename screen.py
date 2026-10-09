@@ -16,13 +16,6 @@ GREEN_RGB = (45, 224, 28)
 WHITE_RGB = (255, 255, 255)
 BET_LIVE_RGB = (20, 117, 225)
 COLOR_TOLERANCE = 60
-PILL_FLOOR = 45
-PILL_MIN_WIDTH = 20
-PILL_PAD = 4
-PILL_SPLIT = 110
-PILL_LIGHT = (190, 200)
-PILL_DARK = (60, 80)
-PILL_CONFIG = '--psm 7 -c tessedit_char_whitelist=0123456789.'
 move_mouse_back = True
 last_logged = {}
 
@@ -78,6 +71,18 @@ def click_button(button, text='', triple_click=False):
         logger.exception('Input action failed for %s', button['name'])
         return None
 
+def click_fast(button):
+    try:
+        orig_x, orig_y = pyautogui.position()
+        click_ts = time.monotonic()
+        pyautogui.click(button['x'] + button['width'] // 4 + random.randint(0, button['width'] // 2), button['y'] + button['height'] // 4 + random.randint(0, button['height'] // 2), _pause=False)
+        if move_mouse_back:
+            pyautogui.moveTo(orig_x, orig_y, _pause=False)
+        return click_ts
+    except Exception:
+        logger.exception('Cashout click failed')
+        return None
+
 def capture_region(button):
     x, y, width, height = (button[key] for key in ('x', 'y', 'width', 'height'))
     return ImageGrab.grab(bbox=(x, y, x + width, y + height), all_screens=True)
@@ -128,30 +133,6 @@ def ocr_text(name, img, budget, whitelist, white_floor=None):
         last_logged[name] = text
         logger.debug('OCR %s %r', name, text)
     return text
-
-def read_pill(crop, index, budget):
-    cut = (lambda v: 0 if v <= PILL_DARK[index] else 255) if np.asarray(crop).mean() > PILL_SPLIT else (lambda v: 0 if v >= PILL_LIGHT[index] else 255)
-    prepared = crop.point(cut).resize((crop.width * 3, crop.height * 3), Image.Resampling.LANCZOS)
-    try:
-        return pytesseract.image_to_string(prepared, config=PILL_CONFIG, timeout=budget).strip()
-    except Exception as exc:
-        logger.warning('OCR pill failed: %s', exc)
-        return ''
-
-def strip_values(img, budget):
-    gray = ImageOps.grayscale(img)
-    lit = list((np.asarray(gray) > PILL_FLOOR).sum(0) > 5) + [False]
-    values, start = [], None
-    for x, on in enumerate(lit):
-        if on and start is None:
-            start = x
-        elif not on and start is not None:
-            if x - start >= PILL_MIN_WIDTH:
-                crop = gray.crop((start + PILL_PAD, 0, x - PILL_PAD, gray.height))
-                values.append(tuple(read_pill(crop, index, budget) for index in range(len(PILL_LIGHT))))
-            start = None
-    logger.debug('OCR strip %s', values)
-    return values
 
 def monitor_region(x, y):
     monitor = user32.MonitorFromPoint(wintypes.POINT(x, y), 2)

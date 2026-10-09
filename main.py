@@ -40,11 +40,13 @@ AUTOPLAY_CLICK_LIMIT = 5
 CRASHPOINT_WHITE_FLOOR = 222
 MONO_OFFSET = time.time() - time.monotonic()
 CRASHPOINT_PATTERN = re.compile(r'\d+\.\d{2}')
-CRASH_GROWTH_PER_SECOND = 0.06
-CRASH_START_OFFSET_SECONDS = 7.4
-LAG_CHECK_RATIO = 1.5
-LAG_ANCHOR_TOLERANCE = 0.02
-LAG_CHECK_DELAY_SECONDS = 1.0
+FIELD_PATTERN = re.compile(r'\d+\.\d+')
+CRASH_GROWTH_PER_SECOND = 0.06006
+CRASH_START_OFFSET_SECONDS = 8.04
+BALL_LEAVE_SECONDS = 0.52
+CLICK_GREEN_LIMIT_SECONDS = 2.0
+BET_TEXT_POLL_SECONDS = 2.0
+FORMULA_OFF_RATIO = 1.5
 BEST_BAR_WIDTH = 20
 CURRENT_STRATEGY_VALUE = re.compile(r'("current_strategy_id"\s*:\s*)"[^"]*"')
 RANDOM_ID = 'random'
@@ -53,7 +55,6 @@ logger = logging.getLogger('crash_picker')
 cfg = None
 flow = None
 strategies = ()
-last_crashpoint = None
 features = {}
 inplay_objects = []
 restart_objects = []
@@ -137,7 +138,8 @@ def load_config(path):
         after_red_wait_seconds=number('after_red_wait_seconds', 0, False), refresh_wait_seconds=number('refresh_wait_seconds', 0, False),
         watch_mode=flag('watch_mode'), autoplay_mode=flag('autoplay_mode'), crashpoint_rate_enabled=flag('crashpoint_rate_enabled'),
         crashpoint_rate_threshold=number('crashpoint_rate_threshold', 0, True), crashpoint_rate_window=count('crashpoint_rate_window', 1),
-        best_strategy_enabled=flag('best_strategy_enabled'), best_strategy_window=count('best_strategy_window', 1))
+        best_strategy_enabled=flag('best_strategy_enabled'), best_strategy_window=count('best_strategy_window', 1),
+        manual_cashout=flag('manual_cashout'), backstop_multiplier=number('backstop_multiplier', 1, True), cashout_lead_seconds=number('cashout_lead_seconds', 0, False), random_backstop=flag('random_backstop'))
 
 def load_strategies(path, floor):
     with open(path, encoding='utf-8') as source:
@@ -208,7 +210,7 @@ def write_atomic(path, writer):
 def load_json_data():
     with open(JSON_PATH, encoding='utf-8') as source:
         data = json.load(source)
-    groups = {'inplay_objects': {'play_button', 'crash_text', 'win_end_color', 'lag_crash_strip'}, 'restart_objects': {'profit_text', 'refresh_button', 'bet_input', 'cashout_input', 'ball_start_color'}}
+    groups = {'inplay_objects': {'play_button', 'crash_text', 'win_end_color'}, 'restart_objects': {'profit_text', 'refresh_button', 'bet_input', 'cashout_input', 'ball_start_color'}}
     for group, required in groups.items():
         entries = data.get(group)
         if not isinstance(entries, list):
@@ -253,15 +255,13 @@ def crash_row(record, text):
     formula = f'{max(1.0, math.exp(CRASH_GROWTH_PER_SECOND * (record.end_ts - record.open_ts - CRASH_START_OFFSET_SECONDS))):.2f}'
     match = CRASHPOINT_PATTERN.search(text or '')
     crashpoint = match[0] if match else formula
-    note = ' FORMULA_USED' if match is None else ' FORMULA_OFF' if float(formula) > LAG_CHECK_RATIO * float(crashpoint) else ''
+    note = ' FORMULA_USED' if match is None else ' FORMULA_OFF' if float(formula) > FORMULA_OFF_RATIO * float(crashpoint) else ''
     return crashpoint, formula, note, match is not None
 
 def write_crash_row(record, crashpoint, confirmed):
-    global last_crashpoint
     with open(CRASH_CSV_PATH, 'a', encoding='utf-8') as target:
         target.write(f'{crashpoint},{wall_time(record.open_ts)},{wall_time(record.end_ts)}\n')
-    last_crashpoint = crashpoint if confirmed else None
-    if confirmed and flow.record_crashpoint(float(crashpoint)):
+    if confirmed and record.outcome != 'unknown' and flow.record_crashpoint(float(crashpoint)):
         log_best(*flow.pick_best())
 
 def log_best(base, ranking):
@@ -278,29 +278,6 @@ def save_debug_shot(name):
         screen.capture_region(screenshot_region).save(os.path.join(SCREENSHOT_DIR, f'{name}.png'), format='PNG', compress_level=1)
     except Exception:
         logger.exception('Debug screenshot failed')
-
-def resolve_lag(regions):
-    global last_crashpoint
-    record = flow.suspect
-    anchor = last_crashpoint
-    stop_event.wait(LAG_CHECK_DELAY_SECONDS)
-    img = screen.capture_region(regions['lag_crash_strip'])
-    img.save(os.path.join(SCREENSHOT_DIR, f'lag_R{record.round_id}_{wall_time(record.open_ts)}.png'), format='PNG', compress_level=1)
-    save_debug_shot(f'lag_page_R{record.round_id}_{wall_time(record.open_ts)}')
-    values = []
-    for first, second in screen.strip_values(img, cfg.ocr_timeout_seconds):
-        one, two = CRASHPOINT_PATTERN.search(first), CRASHPOINT_PATTERN.search(second)
-        values.append(one[0] if one and two and one[0] == two[0] else None)
-    near = [position for position, value in enumerate(values) if value is not None and abs(float(value) - float(anchor)) <= LAG_ANCHOR_TOLERANCE * float(anchor)] if anchor is not None else []
-    index = near[0] if len(near) == 1 else -1
-    missed = values[index + 1] if -1 < index < len(values) - 1 else None
-    reason = flow.resolve_suspect(missed)
-    crashpoint, _, _, confirmed = crash_row(record, record.final_crashpoint)
-    write_crash_row(record, crashpoint, confirmed)
-    if values:
-        last_crashpoint = values[-1]
-    logger.warning('R#%d LAG_RESOLVED strip=%s anchor=%s missed=%s outcome=%s target=%.2f crashpoint=%s net=%.2f balance=%.2f hold=%d skip=%d baseloss=%d/%d', record.round_id, values, anchor, missed, record.outcome, record.submitted.actual_target, crashpoint, record.net, flow.balance, flow.hold_remaining, flow.skip_remaining, flow.base_loss_count, flow.base_loss_trigger)
-    return reason
 
 def round_ready(regions):
     if not screen.has_color(screen.capture_rgb_fast(regions['ball_start_color']), screen.WHITE_RGB):
@@ -324,9 +301,9 @@ def submit_bet(record):
     screen.wait_for_idle(INPUT_IDLE_SECONDS, INPUT_IDLE_CAP_SECONDS)
     if not play_button_live(record, 'dark_before_typing'):
         return
-    for name, value in (('bet_input', f'{bet.stake:.2f}'), ('cashout_input', f'{bet.actual_target:.2f}')):
+    for name, value in (('bet_input', f'{bet.stake:.2f}'), ('cashout_input', f'{bet.typed:.2f}')):
         text = screen.ocr_text(name, screen.capture_region(regions[name]), cfg.ocr_timeout_seconds, whitelist='0123456789.')
-        match = CRASHPOINT_PATTERN.search(text or '')
+        match = FIELD_PATTERN.search(text or '')
         if match and abs(float(match[0]) - float(value)) < 0.005:
             continue
         logger.info('R#%d FIELD %s reads %r, typing %s', record.round_id, name, text, value)
@@ -371,8 +348,11 @@ def confirmation_loop(record):
                 return
             reads += 1
             if reads > 1:
-                logger.warning('R#%d BET_RETRY profit_text=%r at %.2fs', record.round_id, text, now - record.click_ts)
-                screen.click_button(record.regions['play_button'])
+                button = screen.ocr_text('play_button', screen.capture_region(record.regions['play_button']), cfg.ocr_timeout_seconds, whitelist=string.ascii_letters)
+                clicking = button is not None and button.strip().lower() == 'bet'
+                logger.warning('R#%d BET_RETRY profit_text=%r play_button=%r click=%s at %.2fs', record.round_id, text, button, clicking, now - record.click_ts)
+                if clicking:
+                    screen.click_button(record.regions['play_button'])
         next_read = now + CONFIRM_POLL_SECONDS
 
 def do_final_read(record):
@@ -389,6 +369,10 @@ def monitor_round(record):
     stall_at = record.open_ts + STALL_REFRESH_SECONDS
     win_end_color = record.regions['win_end_color']
     fail_since = None
+    manual = flow.manual_cashout and flow.phase == 'playing'
+    white_seen = False
+    click_at = None
+    bet_read_at = math.inf
     while not stop_event.is_set():
         now = time.monotonic()
         if now >= stall_at:
@@ -397,8 +381,19 @@ def monitor_round(record):
             logger.warning('STALL R#%d no red for %.0fs outcome=%s balance=%.2f', record.round_id, now - record.open_ts, record.outcome, flow.balance)
             do_refresh('stalled')
             return
+        due = click_at is not None and now >= click_at
         try:
-            event = flow.colors(*screen.classify_colors(screen.capture_rgb_fast(win_end_color)), now)
+            green, red = screen.classify_colors(screen.capture_rgb_fast(win_end_color))
+            white = manual and record.launch_ts is None and screen.has_color(screen.capture_rgb_fast(record.regions['ball_start_color']), screen.WHITE_RGB)
+            live = due and not red and screen.has_color(screen.capture_rgb_fast(record.regions['play_button']), screen.BET_LIVE_RGB)
+            event = flow.colors(green, red, now)
+            if manual and event is None and flow.phase == 'playing' and record.cash_click_ts is None and now >= bet_read_at and (click_at is None or now < click_at - cfg.ocr_timeout_seconds):
+                bet_read_at = now + BET_TEXT_POLL_SECONDS
+                text = screen.ocr_text('play_button', screen.capture_region(record.regions['play_button']), cfg.ocr_timeout_seconds, whitelist=string.ascii_letters)
+                if text is not None and text.strip().lower() == 'bet':
+                    event = flow.end_round(now, 'loss', 'bet_gone')
+                    logger.warning('R#%d BET_GONE play_button reads %r, crash missed', record.round_id, text)
+                    save_debug_shot(f'bet_gone_R{record.round_id}')
             fail_since = None
         except OSError:
             if fail_since is None:
@@ -409,24 +404,51 @@ def monitor_round(record):
                 return
             stop_event.wait(cfg.normal_poll_seconds)
             continue
+        if due:
+            click_at = None
+            if live and flow.phase == 'playing':
+                record.cash_click_ts = screen.click_fast(record.regions['play_button'])
+            else:
+                logger.warning('R#%d CLICK_SKIPPED red=%s phase=%s', record.round_id, red, flow.phase)
+        if white:
+            white_seen = True
+        elif white_seen:
+            white_seen = False
+            record.launch_ts = now - BALL_LEAVE_SECONDS
+            bet_read_at = record.launch_ts + BET_TEXT_POLL_SECONDS
+            click_at = record.launch_ts + math.log(record.submitted.actual_target) / CRASH_GROWTH_PER_SECOND - cfg.cashout_lead_seconds
         if event == 'green':
             logger.info('R#%d GREEN +%.2fs', record.round_id, record.green_ts - record.click_ts)
             bet = record.submitted
             save_debug_shot(f'cashout_R{record.round_id}_T{bet.tier}_{bet.stake:.2f}_{bet.actual_target:.2f}_{wall_time(record.open_ts)}')
+            if manual:
+                via = 'click' if record.cash_click_ts and record.green_ts - record.cash_click_ts <= CLICK_GREEN_LIMIT_SECONDS else 'backstop'
+                flow.clicks[via] += 1
+                record.realized = bet.actual_target if via == 'click' else bet.typed
+                logger.info('R#%d CASHOUT via=%s click=%s clicks=%s', record.round_id, via, f'+{record.cash_click_ts - record.launch_ts:.3f}s' if record.cash_click_ts else 'none', '{click}/{backstop}/{lost}'.format(**flow.clicks))
         elif event == 'end':
             stop_event.wait(FINAL_READ_DELAY_SECONDS)
+            try:
+                red_still = screen.classify_colors(screen.capture_rgb_fast(win_end_color))[1]
+            except OSError:
+                red_still = True
+            if not red_still:
+                logger.warning('R#%d RED_FLASH no red %.1fs after the end frame, round still live', record.round_id, FINAL_READ_DELAY_SECONDS)
+                save_debug_shot(f'red_flash_R{record.round_id}')
+                record.end_ts = record.outcome = record.close_reason = None
+                continue
             text = do_final_read(record)
             crashpoint, formula, note, confirmed = crash_row(record, text)
-            suspect = record.outcome == 'loss' and float(formula) > LAG_CHECK_RATIO * float(crashpoint)
-            reason = flow.final_read(text, suspect)
-            flag = ' LAG_SUSPECT' if suspect else note
-            settled = '' if suspect else f' net={record.net:.2f} balance={flow.balance:.2f} hold={flow.hold_remaining} skip={flow.skip_remaining} baseloss={flow.base_loss_count}/{flow.base_loss_trigger}'
-            logger.info('R#%d END +%.2fs outcome=%s crashpoint=%s%s%s%s', record.round_id, record.end_ts - record.open_ts, record.outcome, crashpoint, settled, f' formula={formula}' if flag else '', flag)
-            if suspect:
-                logger.warning('R#%d LAG_SUSPECT stake=%.2f target=%.2f anchor=%s holding settlement for the lag_crash_strip strip', record.round_id, record.submitted.stake, record.submitted.actual_target, last_crashpoint)
-            else:
-                write_crash_row(record, crashpoint, confirmed and record.outcome != 'unknown')
-            if suspect or (note and cfg.ocr_debug):
+            reason = flow.final_read(float(crashpoint))
+            target = f' target={record.submitted.actual_target:.2f}' if record.submitted else ''
+            logger.info('R#%d END +%.2fs outcome=%s crashpoint=%s%s net=%.2f balance=%.2f hold=%d skip=%d baseloss=%d/%d%s%s', record.round_id, record.end_ts - record.open_ts, record.outcome, crashpoint, target, record.net, flow.balance, flow.hold_remaining, flow.skip_remaining, flow.base_loss_count, flow.base_loss_trigger, f' formula={formula}' if note else '', note)
+            if record.outcome == 'unknown' and record.realized:
+                logger.warning('R#%d BACKSTOP_UNPAID typed=%.2f clicks=%s', record.round_id, record.realized, '{click}/{backstop}/{lost}'.format(**flow.clicks))
+            if record.cash_click_ts and record.outcome == 'loss':
+                flow.clicks['lost'] += 1
+                logger.warning('R#%d CLICK_LOST click=+%.3fs clicks=%s', record.round_id, record.cash_click_ts - record.launch_ts, '{click}/{backstop}/{lost}'.format(**flow.clicks))
+            write_crash_row(record, crashpoint, confirmed)
+            if note and cfg.ocr_debug:
                 save_debug_shot(f'check_R{record.round_id}')
             if reason is not None:
                 do_refresh(reason)
@@ -468,12 +490,13 @@ def check_autoplay(record):
 def begin_round(regions):
     flow.set_features(**features)
     queued = flow.queued
-    if queued is not None:
+    if queued is not None and (flow.pending is None or flow.pending.tier == 0):
         activate_strategy(queued)
     green, red = screen.classify_colors(screen.capture_rgb_fast(regions['win_end_color']))
     record = flow.open_round(time.monotonic(), regions, green, red)
     bet = record.planned
-    bet_text = f'tier={bet.tier} stake={bet.stake:.2f} target={bet.actual_target:.2f}' if bet else ''
+    typed = f' typed={bet.typed:.2f}' if bet and bet.typed != bet.actual_target else ''
+    bet_text = f'tier={bet.tier} stake={bet.stake:.2f} target={bet.actual_target:.2f}{typed}' if bet else ''
     pattern = ('(R)' if flow.random_mode else '(B)' if flow.best_mode else '') + flow.strategy.label.lower().replace(' ', '_')
     logger.info('R#%d START action=%s %s hold=%d skip=%d pattern=%s', record.round_id, record.action, bet_text, flow.hold_remaining, flow.skip_remaining, pattern)
     if green or red:
@@ -497,11 +520,6 @@ def run_worker():
             regions = snapshot_regions()
             if round_ready(regions):
                 ready_since = None
-                if flow.suspect is not None:
-                    lag_reason = resolve_lag(regions)
-                    if lag_reason is not None:
-                        do_refresh(lag_reason)
-                        continue
                 begin_round(regions)
                 continue
             if now - ready_since >= STALL_REFRESH_SECONDS:
@@ -514,7 +532,7 @@ def run_worker():
             if now - last_diag >= DIAG_LOG_INTERVAL_SECONDS:
                 logger.info('DIAG waiting for ready signal %.0fs', now - ready_since)
                 last_diag = now
-            stop_event.wait(cfg.normal_poll_seconds)
+            time.sleep(FAST_POLL_SECONDS)
         elif phase == 'confirming':
             confirmation_loop(record)
         elif phase in ('playing', 'cashed', 'watching'):
@@ -528,14 +546,9 @@ def run_worker():
     logger.info('STOP')
 
 def close_round(reason):
-    global last_crashpoint
-    suspect, flow.suspect = flow.suspect, None
-    if suspect is not None:
-        crashpoint, _, _, confirmed = crash_row(suspect, suspect.final_crashpoint)
-        write_crash_row(suspect, crashpoint, confirmed)
-        logger.warning('R#%d LAG_ABANDONED reason=%s crashpoint=%s', suspect.round_id, reason, crashpoint)
-    if reason == 'stop' and flow.queued is not None:
-        activate_strategy(flow.queued)
+    queued = flow.queued
+    if reason == 'stop' and queued is not None:
+        activate_strategy(queued)
     record = flow.round
     unsettled = record is not None and not record.settled
     flow.interrupt(reason)
@@ -543,7 +556,6 @@ def close_round(reason):
         logger.info('R#%d INTERRUPT reason=%s outcome=%s balance=%.2f', record.round_id, reason, record.outcome, flow.balance)
         if record.outcome == 'unknown':
             save_debug_shot(f'unknown_R{record.round_id}')
-    last_crashpoint = None
 
 def game_worker():
     try:
@@ -561,11 +573,13 @@ def start_game():
     stop_event.clear()
     flow.watch_mode = ui.watch_var.get() == 1
     flow.autoplay_mode = ui.autoplay_var.get() == 1
+    flow.manual_cashout = ui.manual_var.get() == 1
+    flow.random_backstop = ui.backstop_var.get() == 1
     win_end_color = snapshot_regions()['win_end_color']
     screenshot_region = screen.monitor_region(win_end_color['x'], win_end_color['y'])
     ui.set_running(True)
     mode = ' random' if flow.random_mode else f' best every {cfg.best_strategy_window}' if flow.best_mode else ''
-    logger.info('START watch_mode=%d autoplay_mode=%d strategy=%s%s screenshot monitor=%s', flow.watch_mode, flow.autoplay_mode, flow.strategy.id, mode, screenshot_region)
+    logger.info('START watch_mode=%d autoplay_mode=%d manual_cashout=%d random_backstop=%d strategy=%s%s screenshot monitor=%s', flow.watch_mode, flow.autoplay_mode, flow.manual_cashout, flow.random_backstop, flow.strategy.id, mode, screenshot_region)
     worker_thread = threading.Thread(target=game_worker, daemon=True)
     worker_thread.start()
 
@@ -592,7 +606,7 @@ def save_changes():
     try:
         save_json_data()
         save_current_strategy(RANDOM_ID if flow.random_mode else (flow.queued or flow.strategy).id)
-        save_ini_flags({'watch_mode': ui.watch_var.get(), 'autoplay_mode': ui.autoplay_var.get(), 'best_strategy_enabled': int(flow.best_mode), 'bet_holding': int(features['bet_holding']), 'max_loss_skipping': int(features['max_loss_skipping']), 'crashpoint_rate_enabled': int(features['crashpoint_rate_enabled']), 'randomize_cashout': int(features['randomize_cashout'])})
+        save_ini_flags({'watch_mode': ui.watch_var.get(), 'autoplay_mode': ui.autoplay_var.get(), 'best_strategy_enabled': int(flow.best_mode), 'bet_holding': int(features['bet_holding']), 'max_loss_skipping': int(features['max_loss_skipping']), 'crashpoint_rate_enabled': int(features['crashpoint_rate_enabled']), 'randomize_cashout': int(features['randomize_cashout']), 'manual_cashout': ui.manual_var.get(), 'random_backstop': ui.backstop_var.get()})
     except Exception as exc:
         logger.exception('SAVE error')
         ui.show_error(f'Save failed: {exc}')

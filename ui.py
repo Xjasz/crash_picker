@@ -150,7 +150,7 @@ def clear_images_clicked():
     messagebox.showinfo('Crash Picker', f'Removed {removed} image(s), {failed} failed.')
 
 def build_ui(main_module):
-    global app, root, watch_var, autoplay_var, best_var, mode_checks, feature_checks, buttons, status_label, phase_label, balance_label, delta_label, tile_values, strategy_box, notice_label
+    global app, root, watch_var, autoplay_var, best_var, manual_var, backstop_var, mode_checks, feature_checks, buttons, status_label, phase_label, balance_label, delta_label, tile_values, strategy_box, notice_label
     app = main_module
     root = tk.Tk()
     root.title('Crash Picker')
@@ -216,9 +216,9 @@ def build_ui(main_module):
     modes = tk.Frame(bottom, bg=BG)
     modes.pack(side=tk.LEFT, anchor='n')
     tk.Label(modes, text='MODES', fg=MUTED, bg=BG, font=(FONT, 7, 'bold')).pack(anchor='w', padx=3, pady=(0, 2))
-    watch_var, autoplay_var, best_var = tk.IntVar(value=app.cfg.watch_mode), tk.IntVar(value=app.cfg.autoplay_mode), tk.IntVar(value=int(app.flow.best_mode))
+    watch_var, autoplay_var, best_var, manual_var, backstop_var = tk.IntVar(value=app.cfg.watch_mode), tk.IntVar(value=app.cfg.autoplay_mode), tk.IntVar(value=int(app.flow.best_mode)), tk.IntVar(value=app.cfg.manual_cashout), tk.IntVar(value=app.cfg.random_backstop)
     mode_checks = []
-    for text, variable, command in (('Watch mode (no bets)', watch_var, None), ('Autoplay mode (click start)', autoplay_var, None), (f'Best pattern ({app.cfg.best_strategy_window})', best_var, best_toggled)):
+    for text, variable, command in (('Watch mode (no bets)', watch_var, None), ('Autoplay mode (click start)', autoplay_var, None), (f'Best pattern ({app.cfg.best_strategy_window})', best_var, best_toggled), ('Manual cashout (click at target)', manual_var, None), ('Random backstop (2x-1000x)', backstop_var, None)):
         check = tk.Checkbutton(modes, text=text, variable=variable, command=command, bg=BG, fg=FG, selectcolor=BG, activebackground=BG, activeforeground=FG, disabledforeground=MUTED, font=(FONT, 9))
         check.pack(anchor='w')
         mode_checks.append(check)

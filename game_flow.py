@@ -7,6 +7,7 @@ from decimal import Decimal
 CONFIRMATION_PATTERN = re.compile(r'^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$')
 KEEP_TIER_REASONS = {'confirmation_failures', 'input_failures'}
 BEST_HOLD_MAX = 3
+BACKSTOP_RANGE = (2, 1000)
 
 @dataclass(frozen=True)
 class GameConfig:
@@ -39,6 +40,10 @@ class GameConfig:
     crashpoint_rate_window: int
     best_strategy_enabled: int
     best_strategy_window: int
+    manual_cashout: int
+    backstop_multiplier: float
+    cashout_lead_seconds: float
+    random_backstop: int
 
 @dataclass(frozen=True)
 class Strategy:
@@ -52,6 +57,7 @@ class PlannedBet:
     tier: int
     stake: float
     actual_target: float
+    typed: float
 
 @dataclass
 class RoundRecord:
@@ -66,10 +72,12 @@ class RoundRecord:
     confirmed_text: str | None = None
     armed: bool = False
     green_ts: float | None = None
+    launch_ts: float | None = None
+    cash_click_ts: float | None = None
+    realized: float | None = None
     end_ts: float | None = None
     outcome: str | None = None
     close_reason: str | None = None
-    final_crashpoint: str | None = None
     net: float = 0.0
     settled: bool = False
 
@@ -117,14 +125,16 @@ class GameFlow:
         self.phase = 'stopped'
         self.watch_mode = False
         self.autoplay_mode = False
+        self.manual_cashout = False
+        self.random_backstop = False
+        self.clicks = {'click': 0, 'backstop': 0, 'lost': 0}
         self.round = None
         self.round_counter = 0
-        self.suspect = None
         self.best_mode = cfg.best_strategy_enabled == 1
         self.crashpoints = deque(maxlen=cfg.crashpoint_rate_window)
         self.rate_hits = 0
         self.window = []
-        self.hold_plan = ()
+        self.queued_plan = ()
         self.strategies = strategies
         self.random_mode = strategy is None and not self.best_mode
         self.set_strategy(strategy or self.rng.choice(strategies))
@@ -146,6 +156,7 @@ class GameFlow:
         self.queued = None
         self.strategy = strategy
         self.strategy_losses = 0
+        self.hold_plan, self.queued_plan = self.queued_plan, ()
         self.base_loss_trigger = int(Decimal(repr(strategy.cashpoints[0])) * Decimal(repr(self.cfg.base_loss_multiplier)))
         self.reset_ladder()
 
@@ -159,8 +170,8 @@ class GameFlow:
         self.base_loss_count = 0
 
     def set_features(self, bet_holding, max_loss_skipping, crashpoint_rate_enabled, randomize_cashout):
-        manual = not self.best_mode
-        self.holding, self.skipping, self.rate_on, self.randomizing = manual and bet_holding, manual and max_loss_skipping, crashpoint_rate_enabled, randomize_cashout
+        free = not self.best_mode
+        self.holding, self.skipping, self.rate_on, self.randomizing = free and bet_holding, free and max_loss_skipping, crashpoint_rate_enabled, randomize_cashout
         if not self.holding and not self.hold_plan:
             self.hold_remaining = 0
         if not self.skipping:
@@ -178,15 +189,14 @@ class GameFlow:
         base = calculate_base_bet(self.cfg, self.balance)
         ranking = sorted(((*best_holds(strategy, self.window, base), strategy) for strategy in self.strategies), key=lambda row: row[0], reverse=True)
         self.window = []
-        self.hold_plan = ranking[0][3]
-        self.queued = ranking[0][6]
+        self.queued, self.queued_plan = ranking[0][6], ranking[0][3]
         return base, ranking
 
-    def plan_target(self, nominal):
-        if not self.randomizing:
-            return nominal
+    def plan_cashout(self, nominal):
         spread = self.cfg.cashout_range / 100
-        return round(nominal * self.rng.uniform(1 - spread, 1 + spread), 2)
+        target = round(nominal * self.rng.uniform(1 - spread, 1 + spread), 2) if self.randomizing else nominal
+        typed = round(target * (self.rng.uniform(*BACKSTOP_RANGE) if self.random_backstop else self.cfg.backstop_multiplier), 2) if self.manual_cashout else target
+        return target, typed
 
     def set_phase(self, phase):
         self.phase = phase
@@ -198,7 +208,7 @@ class GameFlow:
         record = RoundRecord(self.round_counter, ts, regions, action, armed=not green and not red)
         if action == 'play':
             if self.pending is None:
-                self.pending = PlannedBet(0, calculate_base_bet(self.cfg, self.balance), self.plan_target(self.strategy.cashpoints[0]))
+                self.pending = PlannedBet(0, calculate_base_bet(self.cfg, self.balance), *self.plan_cashout(self.strategy.cashpoints[0]))
             record.planned = self.pending
             self.phase = 'submitting'
         else:
@@ -256,23 +266,12 @@ class GameFlow:
         self.round.close_reason = reason
         return 'end'
 
-    def final_read(self, text, suspect):
-        self.round.final_crashpoint = text
-        self.suspect = self.round if suspect else None
-        reason = None if suspect else self.settle()
+    def final_read(self, crashpoint):
+        reason = self.settle(crashpoint)
         self.set_phase('post_red')
         return reason
 
-    def resolve_suspect(self, crashpoint):
-        record = self.suspect
-        self.suspect = None
-        if crashpoint is not None:
-            record.final_crashpoint = crashpoint
-            if float(crashpoint) >= record.submitted.actual_target:
-                record.outcome = 'win'
-        return self.settle()
-
-    def settle(self):
+    def settle(self, crashpoint):
         record = self.round
         if record.settled:
             return None
@@ -281,8 +280,11 @@ class GameFlow:
         cfg = self.cfg
         strategy = self.strategy
         reason = None
+        if record.outcome == 'win' and record.realized is not None and record.realized > bet.actual_target and record.realized > crashpoint:
+            record.outcome = 'unknown'
+            self.clicks['backstop'] -= 1
         if record.outcome == 'win':
-            gross = round(bet.stake * bet.actual_target, 2)
+            gross = round(bet.stake * (record.realized or bet.actual_target), 2)
             record.net = round(gross - bet.stake, 2)
             self.balance = round(self.balance + record.net, 2)
             self.wins += 1
@@ -290,7 +292,7 @@ class GameFlow:
             nxt = bet.tier + 1
             if nxt < len(strategy.cashpoints):
                 stake = round(bet.stake * strategy.multipliers[nxt], 2)
-                self.pending = PlannedBet(nxt, stake, self.plan_target(strategy.cashpoints[nxt]))
+                self.pending = PlannedBet(nxt, stake, *self.plan_cashout(strategy.cashpoints[nxt]))
                 if self.holding:
                     self.hold_remaining = self.rng.randint(0, cfg.hold_range)
                 elif bet.tier < len(self.hold_plan):
@@ -307,7 +309,7 @@ class GameFlow:
                 self.queued = self.pick_random()
             self.pending = None
             if bet.tier == 0:
-                self.pending = PlannedBet(0, calculate_base_bet(cfg, self.balance), bet.actual_target)
+                self.pending = PlannedBet(0, calculate_base_bet(cfg, self.balance), bet.actual_target, bet.typed)
                 self.base_loss_count += 1
                 if self.skipping and self.base_loss_count >= self.base_loss_trigger:
                     self.skip_remaining = self.rng.randint(0, cfg.skip_range)
@@ -345,9 +347,8 @@ class GameFlow:
                 elif self.phase == 'cashed':
                     record.outcome = 'win'
                 record.close_reason = reason
-            self.settle()
+            self.settle(0.0)
         self.round = None
-        self.suspect = None
         if reason == 'stop':
             self.reset_ladder()
             self.window = []
@@ -386,8 +387,6 @@ class GameFlow:
             self.phase_text = f'{self.phase.capitalize()} {bet_text}'
         elif self.phase == 'refreshing':
             self.phase_text = f'Refreshing {self.last_refresh_reason}'
-        elif self.suspect is not None:
-            self.phase_text = f'Lag check R#{self.suspect.round_id}'
         else:
             labels = {'syncing': 'Syncing', 'ready': 'Ready wait', 'post_red': 'Round over'}
             self.phase_text = labels.get(self.phase, 'Stopped')

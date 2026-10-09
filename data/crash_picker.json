@@ -20,13 +20,6 @@
             "y": -680,
             "width": 10,
             "height": 10
-        },
-        {
-            "name": "lag_crash_strip",
-            "x": 2340,
-            "y": -884,
-            "width": 370,
-            "height": 35
         }
     ],
     "restart_objects": [
@@ -67,7 +60,7 @@
         }
     ],
     "window": {
-        "x": 1872,
-        "y": -1008
+        "x": 1792,
+        "y": -832
     }
 }
