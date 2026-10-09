@@ -261,7 +261,7 @@ def crash_row(record, text):
 def write_crash_row(record, crashpoint, confirmed):
     with open(CRASH_CSV_PATH, 'a', encoding='utf-8') as target:
         target.write(f'{crashpoint},{wall_time(record.open_ts)},{wall_time(record.end_ts)}\n')
-    if confirmed and record.outcome != 'unknown' and flow.record_crashpoint(float(crashpoint)):
+    if confirmed and record.outcome != 'unknown' and record.close_reason != 'bet_gone' and flow.record_crashpoint(float(crashpoint)):
         log_best(*flow.pick_best())
 
 def log_best(base, ranking):
@@ -373,6 +373,7 @@ def monitor_round(record):
     white_seen = False
     click_at = None
     bet_read_at = math.inf
+    last_word = None
     while not stop_event.is_set():
         now = time.monotonic()
         if now >= stall_at:
@@ -390,10 +391,12 @@ def monitor_round(record):
             if manual and event is None and flow.phase == 'playing' and record.cash_click_ts is None and now >= bet_read_at and (click_at is None or now < click_at - cfg.ocr_timeout_seconds):
                 bet_read_at = now + BET_TEXT_POLL_SECONDS
                 text = screen.ocr_text('play_button', screen.capture_region(record.regions['play_button']), cfg.ocr_timeout_seconds, whitelist=string.ascii_letters)
-                if text is not None and text.strip().lower() == 'bet':
+                word = text.strip().lower() if text is not None else None
+                if word == 'bet' or word == last_word == 'betnextround':
                     event = flow.end_round(now, 'loss', 'bet_gone')
                     logger.warning('R#%d BET_GONE play_button reads %r, crash missed', record.round_id, text)
                     save_debug_shot(f'bet_gone_R{record.round_id}')
+                last_word = word
             fail_since = None
         except OSError:
             if fail_since is None:
@@ -432,10 +435,10 @@ def monitor_round(record):
                 red_still = screen.classify_colors(screen.capture_rgb_fast(win_end_color))[1]
             except OSError:
                 red_still = True
-            if not red_still:
+            if not red_still and record.close_reason != 'bet_gone':
                 logger.warning('R#%d RED_FLASH no red %.1fs after the end frame, round still live', record.round_id, FINAL_READ_DELAY_SECONDS)
                 save_debug_shot(f'red_flash_R{record.round_id}')
-                record.end_ts = record.outcome = record.close_reason = None
+                record.end_ts = record.close_reason = None
                 continue
             text = do_final_read(record)
             crashpoint, formula, note, confirmed = crash_row(record, text)
