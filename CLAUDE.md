@@ -178,8 +178,8 @@ and the ini ships with `watch_mode = 1` so a fresh install places no bets.
 - One round per ready signal, one click, one `profit_text` confirmation window (`submission_confirmation_seconds` from the click, `profit_text` only), one green latch that red never clears,
   one `end_ts`, one `crash_text` capture with at most one OCR, one settlement (`RoundRecord.settled`), one draw per settlement.
 - The fast loop (`monitor_round` while `flow.phase == 'playing'`) does only capture, classify, `flow.colors`, sleep 5 ms, plus in manual cashout mode one
-  `ball_start_color` capture per frame until the launch is seen and one `play_button` capture on the click frame, and one `play_button` OCR every
-  `BET_TEXT_POLL_SECONDS` (2 s) until a click lands, skipped within `ocr_timeout_seconds` of an armed click. No OCR, files, UI, or logs per frame.
+  `ball_start_color` capture per frame until the launch is seen and one `play_button` capture on the click frame and one beside every `play_button` OCR, and one `play_button` OCR every
+  `BET_TEXT_POLL_SECONDS` (2 s) until a click lands and every `CLICK_RETRY_SECONDS` (0.5 s) after one, skipped within `ocr_timeout_seconds` of an armed click. No OCR, files, UI, or logs per frame.
 - Watch mode makes every round action `watch`: no bet, no hold/skip/base-loss changes, rounds are still read, settled, and written to the CSV.
   Waiting mode uses the same action; the status label reading `WAITING` is what tells them apart.
 - Autoplay mode is the `Autoplay mode (click start)` checkbox under Watch mode, seeded by `autoplay_mode` in the ini and written back by Save; it wins
@@ -207,7 +207,7 @@ and the ini ships with `watch_mode = 1` so a fresh install places no bets.
   signal is not used as a clock here because `open_ts` is late on the first round after Start or a refresh. The click
   (`screen.click_fast`, no pyautogui pauses, cursor returned when `move_mouse_back = 1`) fires only when the same frame shows no red and live blue in
   `play_button`, and only while the phase is still `playing`, because right after a green the same blue button reads `Bet Next Round`; a refused click
-  logs `CLICK_SKIPPED` with the red and phase it saw. Every fast-loop capture and the `play_button` OCR sit inside the same `OSError` guard as `win_end_color`. On green the
+  logs `CLICK_SKIPPED` with the red and phase it saw. No click is trusted to land: from `CLICK_RETRY_SECONDS` (0.5 s) after any click, `play_button` is OCRed every 0.5 s while the phase is still `playing`; a read of exactly `Cashout` re-arms the click for the next frame (`CLICK_RETRY n=`, same red, blue and phase checks, plus the button's pixels must still equal the fast capture taken beside that OCR, so a button that flipped to `Bet Next Round` during the 0.25 s read is never clicked and logs `CLICK_SKIPPED button_changed=True`; `cash_click_ts` moves to the new click so `via` and the logged offset follow the last one), a read of `Bet` or `Bet Next Round` ends the reads because the bet is over either way (cashed with the green a frame away, or crashed), and any other read keeps them going. Added 2026-10-09 after R#74 and R#105: both clicks fired within 0.02 s of the planned moment on the centre of the button and the page ignored them, so the bets rode to the backstop and lost, while the Bet button dropped its first click in 8 of 98 rounds the same morning (R#34 needed four), so dropped clicks are page-side and only a retry recovers them. A retry pays a few percent above the target, which `settle` still books at the target. Every fast-loop capture and the `play_button` OCR sit inside the same `OSError` guard as `win_end_color`. On green the
   round is `via=click` when the green came within `CLICK_GREEN_LIMIT_SECONDS` of the click and `via=backstop` otherwise; `flow.clicks` counts `click`,
   `backstop` and `lost` (a loss after a click, counted at END) and survives Stop like the
   balance. `CASHOUT` logs the click offset from launch and the `clicks=click/backstop/lost` tally; `CLICK_LOST` carries the same tally. Nothing reads the
@@ -321,6 +321,17 @@ and the ini ships with `watch_mode = 1` so a fresh install places no bets.
   `waiting` and `refresh_streak`, so the window shows a clean slate while stopped and Start begins from whatever is picked now. Balance,
   wins, losses, unknown and the 3+ window are money and history, not run state, and survive, as does the click tally. Start itself sets only the four mode flags. A
   Stop/Start that still skipped, held or climbed from the previous run was a bug (2026-09-22); nothing decided in one run may drive the next.
+- `TOP_WINS` is the climb report. A climb opens at a tier-0 win and takes every played round after it (win, loss, unknown; unconfirmed and
+  not-submitted rounds are not rows because they neither end nor advance the ladder) until the ladder is back at base: a loss, a final-tier win
+  or an unknown closes it with that `end`, and `reset_ladder` closes an open one as `reset` (a refresh or Stop while a higher tier is pending).
+  `flow.climbs` holds the run's closed climbs, `flow.climb` the open one, `Climb.strategy` the pattern at the first win, `Climb.won` the winning
+  rows' net and `Climb.net` every row's. `log_top_wins` writes one INFO block after every `TOP_WINS_EVERY` (100) rounds, keyed on the END round's
+  id (an interrupted hundredth round waits for the next hundred) with a climb in progress listed as `end=open`, and once more at the end of
+  `close_round('stop')`, after `interrupt` has settled the in-flight round and `reset_ladder` has closed the open climb as `reset` and right before
+  `close_round` empties `flow.climbs`, so nothing carries into the next Start: a header with the climb count and the run's won and net totals,
+  then the top `TOP_WINS_SHOWN` (10) climbs by won (ties: earlier start), each with its start round, pattern id, won, net, winning-tier count and
+  end, and one row per round with tier, round, stake, target, crash, net and outcome. `record.crashpoint` is set in `settle` for this report and
+  read nowhere else.
 - No checks inside functions that the caller already decided. If a thing is off, the caller does not call. Decide once before a loop, not per
   iteration. `set_running` disables Start, Clear images, and the MODES checkboxes while running, so their handlers never
   re-test `running`.

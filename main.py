@@ -46,8 +46,11 @@ CRASH_START_OFFSET_SECONDS = 8.04
 BALL_LEAVE_SECONDS = 0.52
 CLICK_GREEN_LIMIT_SECONDS = 2.0
 BET_TEXT_POLL_SECONDS = 2.0
+CLICK_RETRY_SECONDS = 0.5
 FORMULA_OFF_RATIO = 1.5
 BEST_BAR_WIDTH = 20
+TOP_WINS_EVERY = 100
+TOP_WINS_SHOWN = 10
 CURRENT_STRATEGY_VALUE = re.compile(r'("current_strategy_id"\s*:\s*)"[^"]*"')
 RANDOM_ID = 'random'
 
@@ -273,6 +276,19 @@ def log_best(base, ranking):
     logger.info('\n'.join(lines[:2]))
     logger.debug('\n' + '\n'.join(lines[2:]))
 
+def log_top_wins(after):
+    climbs = flow.climbs + ([flow.climb] if flow.climb is not None else [])
+    won = sum(climb.won for climb in climbs)
+    net = sum(climb.net for climb in climbs)
+    lines = [f'TOP_WINS after R#{after} climbs={len(climbs)} won={won:+.2f} net={net:+.2f}']
+    for rank, climb in enumerate(sorted(climbs, key=lambda item: (-item.won, item.start))[:TOP_WINS_SHOWN], 1):
+        tiers = sum(row.outcome == 'win' for row in climb.rows)
+        lines.append(f'{rank:>3} R#{climb.start} {climb.strategy.id} won={climb.won:+.2f} net={climb.net:+.2f} tiers={tiers} end={climb.end}')
+        for row in climb.rows:
+            bet = row.submitted
+            lines.append(f'      T{bet.tier} R#{row.round_id} stake={bet.stake:.2f} target={bet.actual_target:.2f} crash={row.crashpoint:.2f} net={row.net:+.2f} {row.outcome}')
+    logger.info('\n'.join(lines))
+
 def save_debug_shot(name):
     try:
         screen.capture_region(screenshot_region).save(os.path.join(SCREENSHOT_DIR, f'{name}.png'), format='PNG', compress_level=1)
@@ -374,6 +390,8 @@ def monitor_round(record):
     click_at = None
     bet_read_at = math.inf
     last_word = None
+    retries = 0
+    button_shot = None
     while not stop_event.is_set():
         now = time.monotonic()
         if now >= stall_at:
@@ -386,17 +404,26 @@ def monitor_round(record):
         try:
             green, red = screen.classify_colors(screen.capture_rgb_fast(win_end_color))
             white = manual and record.launch_ts is None and screen.has_color(screen.capture_rgb_fast(record.regions['ball_start_color']), screen.WHITE_RGB)
-            live = due and not red and screen.has_color(screen.capture_rgb_fast(record.regions['play_button']), screen.BET_LIVE_RGB)
+            button = screen.capture_rgb_fast(record.regions['play_button']) if due else None
+            live = due and not red and screen.has_color(button, screen.BET_LIVE_RGB) and (button_shot is None or button == button_shot)
             event = flow.colors(green, red, now)
-            if manual and event is None and flow.phase == 'playing' and record.cash_click_ts is None and now >= bet_read_at and (click_at is None or now < click_at - cfg.ocr_timeout_seconds):
-                bet_read_at = now + BET_TEXT_POLL_SECONDS
+            if manual and event is None and flow.phase == 'playing' and now >= bet_read_at and (click_at is None or now < click_at - cfg.ocr_timeout_seconds):
+                shot = screen.capture_rgb_fast(record.regions['play_button'])
                 text = screen.ocr_text('play_button', screen.capture_region(record.regions['play_button']), cfg.ocr_timeout_seconds, whitelist=string.ascii_letters)
                 word = text.strip().lower() if text is not None else None
-                if word == 'bet' or word == last_word == 'betnextround':
-                    event = flow.end_round(now, 'loss', 'bet_gone')
-                    logger.warning('R#%d BET_GONE play_button reads %r, crash missed', record.round_id, text)
-                    save_debug_shot(f'bet_gone_R{record.round_id}')
-                last_word = word
+                if record.cash_click_ts is not None:
+                    bet_read_at = math.inf if word in ('bet', 'betnextround') else now + CLICK_RETRY_SECONDS
+                    if word == 'cashout':
+                        retries += 1
+                        click_at, button_shot = now, shot
+                        logger.warning('R#%d CLICK_RETRY n=%d +%.3fs play_button still reads %r', record.round_id, retries, now - record.launch_ts, text)
+                else:
+                    bet_read_at = now + BET_TEXT_POLL_SECONDS
+                    if word == 'bet' or word == last_word == 'betnextround':
+                        event = flow.end_round(now, 'loss', 'bet_gone')
+                        logger.warning('R#%d BET_GONE play_button reads %r, crash missed', record.round_id, text)
+                        save_debug_shot(f'bet_gone_R{record.round_id}')
+                    last_word = word
             fail_since = None
         except OSError:
             if fail_since is None:
@@ -411,8 +438,10 @@ def monitor_round(record):
             click_at = None
             if live and flow.phase == 'playing':
                 record.cash_click_ts = screen.click_fast(record.regions['play_button'])
+                bet_read_at = now + CLICK_RETRY_SECONDS
             else:
-                logger.warning('R#%d CLICK_SKIPPED red=%s phase=%s', record.round_id, red, flow.phase)
+                logger.warning('R#%d CLICK_SKIPPED red=%s phase=%s button_changed=%s', record.round_id, red, flow.phase, button_shot is not None and button != button_shot)
+            button_shot = None
         if white:
             white_seen = True
         elif white_seen:
@@ -451,6 +480,8 @@ def monitor_round(record):
                 flow.clicks['lost'] += 1
                 logger.warning('R#%d CLICK_LOST click=+%.3fs clicks=%s', record.round_id, record.cash_click_ts - record.launch_ts, '{click}/{backstop}/{lost}'.format(**flow.clicks))
             write_crash_row(record, crashpoint, confirmed)
+            if record.round_id % TOP_WINS_EVERY == 0:
+                log_top_wins(record.round_id)
             if note and cfg.ocr_debug:
                 save_debug_shot(f'check_R{record.round_id}')
             if reason is not None:
@@ -559,6 +590,9 @@ def close_round(reason):
         logger.info('R#%d INTERRUPT reason=%s outcome=%s balance=%.2f', record.round_id, reason, record.outcome, flow.balance)
         if record.outcome == 'unknown':
             save_debug_shot(f'unknown_R{record.round_id}')
+    if reason == 'stop':
+        log_top_wins(flow.round_counter)
+        flow.climbs = []
 
 def game_worker():
     try:

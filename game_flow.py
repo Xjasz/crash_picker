@@ -75,11 +75,21 @@ class RoundRecord:
     launch_ts: float | None = None
     cash_click_ts: float | None = None
     realized: float | None = None
+    crashpoint: float | None = None
     end_ts: float | None = None
     outcome: str | None = None
     close_reason: str | None = None
     net: float = 0.0
     settled: bool = False
+
+@dataclass
+class Climb:
+    start: int
+    strategy: Strategy
+    rows: list
+    won: float = 0.0
+    net: float = 0.0
+    end: str = 'open'
 
 def calculate_base_bet(cfg, balance):
     if cfg.bankroll_betting == 1 and balance > 0:
@@ -135,6 +145,8 @@ class GameFlow:
         self.rate_hits = 0
         self.window = []
         self.queued_plan = ()
+        self.climbs = []
+        self.climb = None
         self.strategies = strategies
         self.random_mode = strategy is None and not self.best_mode
         self.set_strategy(strategy or self.rng.choice(strategies))
@@ -168,6 +180,23 @@ class GameFlow:
         self.hold_remaining = 0
         self.skip_remaining = 0
         self.base_loss_count = 0
+        if self.climb is not None:
+            self.close_climb('reset')
+
+    def close_climb(self, end):
+        self.climb.end = end
+        self.climbs.append(self.climb)
+        self.climb = None
+
+    def track_climb(self, record):
+        if self.climb is None:
+            self.climb = Climb(record.round_id, self.strategy, [])
+        self.climb.rows.append(record)
+        self.climb.net = round(self.climb.net + record.net, 2)
+        if record.outcome == 'win':
+            self.climb.won = round(self.climb.won + record.net, 2)
+        if self.pending is None or self.pending.tier == 0:
+            self.close_climb('final_tier' if record.outcome == 'win' else record.outcome)
 
     def set_features(self, bet_holding, max_loss_skipping, crashpoint_rate_enabled, randomize_cashout):
         free = not self.best_mode
@@ -333,6 +362,9 @@ class GameFlow:
             self.unknown += 1
             self.unknown_stake = round(self.unknown_stake + bet.stake, 2)
             self.pending = None
+        record.crashpoint = crashpoint
+        if record.outcome in ('win', 'loss', 'unknown') and (self.climb is not None or record.outcome == 'win'):
+            self.track_climb(record)
         return reason
 
     def interrupt(self, reason):
